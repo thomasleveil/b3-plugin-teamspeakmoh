@@ -39,7 +39,7 @@ Installation
  * copy plugin_teamspeakmoh.xml into your B3 conf folder
  * edit plugin_teamspeakmoh.xml with your teamspeak server information
  * update your main b3 config file with :
-<plugin name="teamspeakmoh" config="@conf/extplugins/plugin_teamspeakbfbc2.xml"/>
+<plugin name="teamspeakmoh" config="@conf/extplugins/plugin_teamspeakmoh.xml"/>
 
 
 Support

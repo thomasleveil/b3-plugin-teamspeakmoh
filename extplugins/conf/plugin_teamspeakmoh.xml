@@ -37,7 +37,7 @@
 		<set name="teamspeak-ts">0</set>
 
 		<!-- !tsauto allow players to change their autoswitch preferences between one
-			of 'off', 'team', 'squad' -->
+			of 'off', 'on'-->
 		<set name="tsauto-tsa">0</set>
 	</settings>
 </configuration>
