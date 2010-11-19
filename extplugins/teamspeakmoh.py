@@ -19,7 +19,7 @@
 #
 #
 # CHANGELOG :
-# 2010/04/13 - 1.0 - Courgette
+# 2010/10/30 - 1.0 - Courgette
 # * initial version
 # 2010/11/19 - 1.1 - Courgette
 # * fix bug regarding team change event
