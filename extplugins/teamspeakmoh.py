@@ -21,9 +21,11 @@
 # CHANGELOG :
 # 2010/04/13 - 1.0 - Courgette
 # * initial version
-# 
+# 2010/11/19 - 1.1 - Courgette
+# * fix bug regarding team change event
+#
 
-__version__ = '1.0'
+__version__ = '1.1'
 __author__ = 'Courgette'
 
 import time, string
@@ -177,7 +179,7 @@ class TeamspeakmohPlugin(b3.plugin.Plugin):
         if self.connected == False:
             return
 
-        if event.type in b3.events.EVT_CLIENT_TEAM_CHANGE:
+        if event.type == b3.events.EVT_CLIENT_TEAM_CHANGE:
             client = event.client
             if client:
                 try:

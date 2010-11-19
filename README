@@ -27,9 +27,10 @@ Admin commands
 Changelog
 ---------
 
-2010/04/13 - 1.0 - Courgette
+2010/10/30 - 1.0 - Courgette
   initial release
-
+2010/11/19 - 1.1 - Courgette
+ fix bug regarding team change event
 
 
 Installation
@@ -45,4 +46,4 @@ Installation
 Support
 -------
 
-see the B3 forums
+see the B3 forums : http://www.bigbrotherbot.net/forums/plugins-by-courgette/teamspeak-moh/
