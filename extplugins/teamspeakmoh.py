@@ -23,9 +23,11 @@
 # * initial version
 # 2010/11/19 - 1.1 - Courgette
 # * fix bug regarding team change event
+# 2010/11/21 - 1.2 - Courgette
+# * more debugging. Pass tests on my side
 #
 
-__version__ = '1.1'
+__version__ = '1.2'
 __author__ = 'Courgette'
 
 import time, string
@@ -115,7 +117,7 @@ class TeamspeakmohPlugin(b3.plugin.Plugin):
             for c in self.console.clients.getList():
                 self.moveClient(c)
         except TS3Error, err:
-            self.error(err)
+            self.error(str(err))
     
     def readConfig(self):
         try:
@@ -185,7 +187,7 @@ class TeamspeakmohPlugin(b3.plugin.Plugin):
                 try:
                     self.moveClient(client)
                 except TS3Error, err:
-                    self.error(err)
+                    self.error(str(err))
 
 
 
@@ -197,10 +199,10 @@ class TeamspeakmohPlugin(b3.plugin.Plugin):
             client.message('Reconnecting to TS on %s:%s ...' % (self.TS3ServerIP, self.TS3QueryPort))
             try:
                 self.tsConnect()
-                self.createChannel()
+                self.tsInitChannels()
             except TS3Error, err:
                 client.message('Failed to connect : %s' % err.msg)
-                self.error(err)
+                self.error(str(err))
 
 
     def cmd_tsdisconnect(self ,data , client, cmd=None):
@@ -214,7 +216,7 @@ class TeamspeakmohPlugin(b3.plugin.Plugin):
                 self.connected = False
             except TS3Error, err:
                 client.message('Failed to disconnect : %s' % err.msg)
-                self.error(err)
+                self.error(str(err))
 
 
     def cmd_teamspeak(self ,data , client, cmd=None):
@@ -248,16 +250,18 @@ class TeamspeakmohPlugin(b3.plugin.Plugin):
         """
         if client:
             autoswitch = client.var(self, 'autoswitch', self.autoswitchDefault).value
+            self.debug('data is %r' % data)
             if not data:
                 infotxt = 'TS autoswitch is '
                 if autoswitch:
                     infotxt += 'enabled'
                 else:
                     infotxt += 'disabled'
+                client.message(infotxt)
             else:
                 parameter = data.lower()
                 if parameter not in ('off', 'on'):
-                    self.debug("Invalid parameter. Expecting 'on' or 'off'")
+                    client.message("Invalid parameter. Expecting 'on' or 'off'")
                 elif parameter == 'off':
                     client.setvar(self, 'autoswitch', False)
                     client.message('You will not be automatically switched on teamspeak')
@@ -296,14 +300,14 @@ class TeamspeakmohPlugin(b3.plugin.Plugin):
             try:
                 return self.tsconnection.command(cmd, parameter, option)
             except TS3Error, err:
+                self.error("TS3 error : %s" % err)
                 """Try to automatically recover from some frequent errors"""
                 if err.code == 1024:
                     ## invalid serverID
                     self.tsconnection.command('use', {'sid': self.TS3ServerID})
                     return self.tsconnection.command(cmd, parameter, option)
                 else:
-                    raise err
-        
+                    raise
     
     def tsConnect(self):
         if self.tsconnection is not None:
@@ -312,14 +316,25 @@ class TeamspeakmohPlugin(b3.plugin.Plugin):
             except:
                 pass
             del self.tsconnection
-            
+        
+        self.connected = False
         self.tsconnection = ServerQuery(self.TS3ServerIP, self.TS3QueryPort)
         
         self.info('connecting to teamspeak server %s:%s' % (self.TS3ServerIP, self.TS3QueryPort))
         self.tsconnection.connect()
+        self.info('connected')
         
-        self.info('TS version : %s' % self.tsconnection.command('version'))
-        
+        try:
+            versiondata = self.tsconnection.command('version')
+        except TS3Error, err:
+            if err.code == 3329:
+                ## give a bit a guidance to the user in such case
+                self.warning("B3 is banned from the TS3 server. Make sure you add the B3 ip to your TS3 server white list (query_ip_whitelist.txt)")
+            raise
+        self.info('TS version : %s' % versiondata)
+        if not versiondata['version'].startswith('3.'):
+            self.warning("This plugin is meant to work with a TeamSpeak 3 server")
+
         self.info('Loging to TS server with login name \'%s\'' % self.TS3Login)
         self.tsconnection.command('login', {'client_login_name': self.TS3Login, 'client_login_password': self.TS3Password})
         
@@ -479,12 +494,14 @@ import time
 class TS3Error(Exception):
     code = None
     msg = None
-    def __init__(self, code, msg):
+    msg2 = None
+    def __init__(self, code, msg, msg2=None):
         self.code = code
         self.msg = msg
+        self.msg2 = msg2
 
     def __str__(self):
-        return "ID %s (%s)" % (self.code, self.msg)
+        return "ID %s (%s) %s" % (self.code, self.msg, self.msg2)
 
 
 class ServerQuery():
@@ -510,8 +527,8 @@ class ServerQuery():
         """
         try:
             self.telnet = telnetlib.Telnet(self.IP, self.Query)
-        except telnetlib.socket.error:
-            raise TS3Error(10, 'Can not open a link on the port or IP')
+        except telnetlib.socket.error, err:
+            raise TS3Error(10, 'Can not open a link on the port or IP', err)
         output = self.telnet.read_until('TS3', self.Timeout)
         if output.endswith('TS3') == False:
             raise TS3Error(20, 'This is not a Teamspeak 3 Server')
@@ -583,9 +600,15 @@ class ServerQuery():
         telnetCMD += '\n'
         self.telnet.write(telnetCMD)
 
-        telnetResponse = self.telnet.read_until("msg=ok", self.Timeout)
+        try:
+            telnetResponse = self.telnet.read_until("msg=ok", self.Timeout)
+        except EOFError, err:
+            raise TS3Error(5, err.msg)
         telnetResponse = telnetResponse.split(r'error id=')
-        notParsedCMDStatus = "id=" + telnetResponse[1]
+        try:
+            notParsedCMDStatus = "id=" + telnetResponse[1]
+        except IndexError:
+            raise TS3Error(12, "bad TS3 response : %r" % telnetResponse)
         notParsedInfo = telnetResponse[0].split('|')
 
         if (cmd.endswith("list") == True) or (len(notParsedInfo) > 1):
@@ -611,7 +634,7 @@ class ServerQuery():
             ReturnCMDStatus[ParsedCMDStatusLine[0]] = self.escaping2string(
                 ParsedCMDStatusLine[1])
         if ReturnCMDStatus['id'] != 0:
-            raise TS3Error(ReturnCMDStatus['id'], ReturnCMDStatus['msg'])
+            raise TS3Error(ReturnCMDStatus['id'], ReturnCMDStatus['msg'], ReturnCMDStatus)
 
         return returnInfo
 
@@ -705,10 +728,10 @@ if __name__ == '__main__':
     <configuration plugin="teamspeakmoh">
    <settings name="teamspeakServer">
       <set name="host">localhost</set>
-      <set name="queryport">51234</set>
+      <set name="queryport">10011</set>
       <set name="id">1</set>
       <set name="login">b3test</set>
-      <set name="password">+UZRQhxT</set>
+      <set name="password">LFggtfo3</set>
    </settings>
    <settings name="teamspeakChannels">
       <set name="B3">B3 autoswitched channel</set>
@@ -730,6 +753,8 @@ if __name__ == '__main__':
     p = TeamspeakmohPlugin(fakeConsole, conf)
     p.onStartup()
 
+    
+    
     joe.team = b3.TEAM_UNKNOWN
     joe.connects('Joe')
     
@@ -751,7 +776,7 @@ if __name__ == '__main__':
     
     import unittest
     
-    class TestTeamspeakbfbc2(unittest.TestCase):
+    class TestTeamspeakmoh(unittest.TestCase):
         def test_teamMisc(self):
             joe.team = b3.TEAM_SPEC
             fakeConsole.queueEvent(b3.events.Event(b3.events.EVT_CLIENT_TEAM_CHANGE, joe.team, joe))
