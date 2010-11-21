@@ -25,9 +25,11 @@
 # * fix bug regarding team change event
 # 2010/11/21 - 1.2 - Courgette
 # * more debugging. Pass tests on my side
-#
+# 2010/11/21 - 1.3 - Courgette
+# * reconnect to the TS3 server whenever a TS3 command respond with a bad formated response or socket error
+# * TS command method is thread safe
 
-__version__ = '1.2'
+__version__ = '1.3'
 __author__ = 'Courgette'
 
 import time, string
@@ -48,9 +50,9 @@ class TeamspeakmohPlugin(b3.plugin.Plugin):
     TS3ServerID = None
     TS3Login = None
     TS3Password = None
-    TS3ChannelB3 = 'B3 autoswitched channels'
-    TS3ChannelTeam1 = 'Team A'
-    TS3ChannelTeam2 = 'Team B'
+    TS3ChannelB3 = 'B3 autoswitched MoH'
+    TS3ChannelTeam1 = 'OPFOR'
+    TS3ChannelTeam2 = 'KOALITION'
     
     
     tsconnection = None
@@ -69,7 +71,7 @@ class TeamspeakmohPlugin(b3.plugin.Plugin):
         """
         
         if self.console.gameName != 'moh':
-            raise SystemExit('The Teamspeakbfbc2 plugin require the MoH parser to run')
+            raise SystemExit('The Teamspeakmoh plugin require the MoH parser to run')
 
         # get the admin plugin so we can register commands
         self._adminPlugin = self.console.getPlugin('admin')
@@ -112,6 +114,7 @@ class TeamspeakmohPlugin(b3.plugin.Plugin):
         self.readConfig()
         
         try:
+            self.tsconnection = ServerQuery(self.TS3ServerIP, self.TS3QueryPort)
             self.tsConnect()
             self.tsInitChannels()
             for c in self.console.clients.getList():
@@ -199,7 +202,6 @@ class TeamspeakmohPlugin(b3.plugin.Plugin):
             client.message('Reconnecting to TS on %s:%s ...' % (self.TS3ServerIP, self.TS3QueryPort))
             try:
                 self.tsConnect()
-                self.tsInitChannels()
             except TS3Error, err:
                 client.message('Failed to connect : %s' % err.msg)
                 self.error(str(err))
@@ -297,28 +299,40 @@ class TeamspeakmohPlugin(b3.plugin.Plugin):
     
     def tsSendCommand(self, cmd, parameter={}, option=[]):
         if self.connected:
-            try:
-                return self.tsconnection.command(cmd, parameter, option)
-            except TS3Error, err:
-                self.error("TS3 error : %s" % err)
-                """Try to automatically recover from some frequent errors"""
-                if err.code == 1024:
-                    ## invalid serverID
-                    self.tsconnection.command('use', {'sid': self.TS3ServerID})
-                    return self.tsconnection.command(cmd, parameter, option)
-                else:
-                    raise
-    
+            return self._tsSendCommand(cmd, parameter, option)
+            
+    def _tsSendCommand(self, cmd, parameter, option, numtries=1):
+        if numtries > 3:
+            self.error("Too many tries. Could not send TS3 command %s(%s) " % (cmd, repr(parameter)))
+            return
+        try:
+            self.debug('TS command %s(%s) [#%s]' % (cmd, repr(parameter), numtries))
+            return self.tsconnection.command(cmd, parameter, option)
+        except TS3Error, err:
+            """Try to automatically recover from some frequent errors"""
+            self.error("TS3 error : %s" % str(err))
+            if err.code == 1024:
+                ## invalid serverID
+                self.tsconnection.command('use', {'sid': self.TS3ServerID})
+                return self._tsSendCommand(cmd, parameter, option, numtries+1)
+            elif err.code == 12: 
+                ## Bad TS3 response
+                self.tsConnect()
+                return self._tsSendCommand(cmd, parameter, option, numtries+1)
+            else:
+                raise
+        except telnetlib.socket.error, err:
+            self.tsConnect()
+            return self._tsSendCommand(cmd, parameter, option, numtries+1)            
+
     def tsConnect(self):
         if self.tsconnection is not None:
             try:
                 self.tsconnection.disconnect()
             except:
                 pass
-            del self.tsconnection
         
         self.connected = False
-        self.tsconnection = ServerQuery(self.TS3ServerIP, self.TS3QueryPort)
         
         self.info('connecting to teamspeak server %s:%s' % (self.TS3ServerIP, self.TS3QueryPort))
         self.tsconnection.connect()
@@ -344,11 +358,11 @@ class TeamspeakmohPlugin(b3.plugin.Plugin):
         self.tsconnection.command('use', {'sid': self.TS3ServerID})
         
         self.info('Get server port')
-        serverinfo = self.tsSendCommand('serverinfo')
+        serverinfo = self.tsconnection.command('serverinfo')
         self.debug(serverinfo)
         self.tsServerPort = serverinfo['virtualserver_port']
         self.info('TS server port is %s', self.tsServerPort)
-    
+
     
     def tsInitChannels(self):
         channellist = self.tsSendCommand('channellist')
@@ -417,7 +431,7 @@ class TeamspeakmohPlugin(b3.plugin.Plugin):
         if not client:
             return None
         clientlist = self.tsSendCommand('clientlist')
-        self.debug('clientlist: %s' % clientlist)
+        #self.debug('clientlist: %s' % clientlist)
         if clientlist:
             for c in clientlist:
                 nick = c['client_nickname'].lower()
@@ -432,7 +446,11 @@ class TeamspeakmohPlugin(b3.plugin.Plugin):
     def tsMoveTsclientToChannelId(self, tsclient, tsChannelId):
         if tsclient and self.connected:
             if tsclient['cid'] != tsChannelId:
-                self.tsSendCommand('clientmove', {'clid': tsclient['clid'], 'cid': tsChannelId})
+                try:
+                    self.tsSendCommand('clientmove', {'clid': tsclient['clid'], 'cid': tsChannelId})
+                except TS3Error, err:
+                    if not err.code == 770: ## client already in channel
+                        raise
  
     def tsIsClientInB3Channel(self, tsclient):
         """Return True if the client is found in the B3 channel or one of
@@ -506,6 +524,7 @@ class TS3Error(Exception):
 
 class ServerQuery():
     TSRegex = re.compile(r"(\w+)=(.*?)(\s|$|\|)")
+    lock = thread.allocate_lock()
 
     def __init__(self, ip='127.0.0.1', query=10011):
         """
@@ -598,12 +617,13 @@ class ServerQuery():
         for i in option:
             telnetCMD += " -%s" % (i)
         telnetCMD += '\n'
-        self.telnet.write(telnetCMD)
 
+        self.lock.acquire()
         try:
+            self.telnet.write(telnetCMD)
             telnetResponse = self.telnet.read_until("msg=ok", self.Timeout)
-        except EOFError, err:
-            raise TS3Error(5, err.msg)
+        finally:
+            self.lock.release()
         telnetResponse = telnetResponse.split(r'error id=')
         try:
             notParsedCMDStatus = "id=" + telnetResponse[1]
@@ -727,11 +747,11 @@ if __name__ == '__main__':
     conf.setXml("""
     <configuration plugin="teamspeakmoh">
    <settings name="teamspeakServer">
-      <set name="host">localhost</set>
+      <set name="host">www.cucurb.net</set>
       <set name="queryport">10011</set>
       <set name="id">1</set>
       <set name="login">b3test</set>
-      <set name="password">LFggtfo3</set>
+      <set name="password">Q3Z8icLV</set>
    </settings>
    <settings name="teamspeakChannels">
       <set name="B3">B3 autoswitched channel</set>
@@ -752,53 +772,59 @@ if __name__ == '__main__':
     ## create an instance of the plugin to test
     p = TeamspeakmohPlugin(fakeConsole, conf)
     p.onStartup()
-
-    
     
     joe.team = b3.TEAM_UNKNOWN
     joe.connects('Joe')
-    
-    joe.says("!ts")
-    time.sleep(2)
-    
-    joe.cid = 'Courgette'
-    joe.says("!ts")
-    time.sleep(2)
-    
-    joe.says('!tsauto off')
-    joe.says('!ts')
-    time.sleep(2)
-    
-    joe.says('!tsauto on')
-    joe.says('!ts')
-    time.sleep(2)
-    
-    
+        
     import unittest
     
     class TestTeamspeakmoh(unittest.TestCase):
+        
+        def test_cmd_ts(self):
+            joe.clearMessageHistory()
+            joe.says('!ts')
+            self.assertNotEqual(0, len(joe.message_history))
+        
+        def test_cmd_tsauto(self):
+            joe.clearMessageHistory()
+            joe.says('!tsauto')
+            self.assertNotEqual(0, len(joe.message_history))
+
+            joe.clearMessageHistory()
+            joe.says('!tsauto off')
+            self.assertNotEqual(0, len(joe.message_history))
+            self.assertEqual('You will not be automatically switched on teamspeak', joe.getMessageHistoryLike('You will'))
+            
+            joe.clearMessageHistory()
+            joe.says('!tsauto on')
+            self.assertNotEqual(0, len(joe.message_history))
+            self.assertEqual('You will be automatically switched on your team channel', joe.getMessageHistoryLike('You will'))
+
+            joe.clearMessageHistory()
+            joe.says('!tsauto qsdfqsd f')
+            self.assertNotEqual(0, len(joe.message_history))
+            self.assertNotEqual(None, joe.getMessageHistoryLike('Invalid parameter'))
+            
+            joe.clearMessageHistory()
+            joe.says('!tsauto    ')
+            self.assertNotEqual(0, len(joe.message_history))
+            self.assertNotEqual(None, joe.getMessageHistoryLike('Invalid parameter'))
+        
         def test_teamMisc(self):
             joe.team = b3.TEAM_SPEC
-            fakeConsole.queueEvent(b3.events.Event(b3.events.EVT_CLIENT_TEAM_CHANGE, joe.team, joe))
-            time.sleep(.2)
             tsclient = p.tsGetClient(joe)
             self.assertNotEqual(tsclient, None)
             self.assertEqual(tsclient['cid'], p.tsChannelIdB3)
 
         def test_team1(self):
             joe.team = b3.TEAM_BLUE
-            fakeConsole.queueEvent(b3.events.Event(b3.events.EVT_CLIENT_TEAM_CHANGE, joe.team, joe))
-            time.sleep(.2)
             tsclient = p.tsGetClient(joe)
             self.assertNotEqual(tsclient, None)
             self.assertEqual(tsclient['cid'], p.tsChannelIdTeam1)
         
         def test_team2(self):
             joe.team = b3.TEAM_RED
-            fakeConsole.queueEvent(b3.events.Event(b3.events.EVT_CLIENT_TEAM_CHANGE, joe.team, joe))
-            time.sleep(.2)
             tsclient = p.tsGetClient(joe)
-            self.assertNotEqual(tsclient, None)
             self.assertNotEqual(tsclient, None)
             self.assertEqual(tsclient['cid'], p.tsChannelIdTeam2)
 
@@ -814,6 +840,6 @@ if __name__ == '__main__':
     fakeConsole.info = donothing
     fakeConsole.exception = donothing
     fakeConsole.critical = donothing
-    
+
     joe.says('!tsauto on')
     unittest.main()

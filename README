@@ -33,8 +33,11 @@ Changelog
  fix bug regarding team change event
 2010/11/21 - 1.2 - Courgette
  more debugging
-
-
+2010/11/21 - 1.3 - Courgette
+ reconnect to the TS3 server whenever a TS3 command respond with a bad formated response or socket error
+ TS command method is thread safe
+ 
+ 
 Installation
 ------------
 
